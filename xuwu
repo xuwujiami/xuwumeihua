@@ -27,7 +27,7 @@ function show_menu() {
     echo -e "${BLUE}||     虚无全自动衣服梅花      ||${NC}"
     echo -e "${BLUE}====================================================${NC}"
     echo -e "${GREEN}1.${NC} 16进制批量修改uexp"
-    echo -e "${YELLOW}2.${NC} 无（预留）"
+    echo -e "${YELLOW}2.${NC} 完全卸载此程序"
     echo -e "${YELLOW}3.${NC} 暂时无（预留）"
     echo -e "${RED}0.${NC} 退出"
     echo -e "${BLUE}====================================================${NC}"
@@ -247,7 +247,10 @@ while true; do
     case $choice in
         1) hex_batch_modify_uexp ;;
         2)
-        sh xuwush
+        # 删除目录及其所有内容（强制删除，无需确认）
+rm -rf "/storage/emulated/0/虚无梅花工具"
+rm -rf "$HOME/xuwumeihua"
+echo 再见👋🏻👋🏻
         ;;
         3) echo -e "${YELLOW}功能暂未实现${NC}"; read -p "" ;;
         0) echo -e "${RED}退出${NC}"; exit 0 ;;
