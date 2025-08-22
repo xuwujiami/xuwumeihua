@@ -5,7 +5,7 @@ RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[0;33m'
 BLUE='\033[0;34m'
-NC='\033[0m' # 恢复默认颜色
+NC='\033[0m'  # 恢复默认颜色
 
 TARGET_EXT="uexp"
 LITTLE_ENDIAN=1  # 1=小端，0=大端
@@ -21,6 +21,7 @@ function int_to_hex_le() {
     echo "$hex"
 }
 
+# 菜单函数
 function show_menu() {
     clear
     echo -e "${BLUE}====================================================${NC}"
@@ -34,34 +35,30 @@ function show_menu() {
     echo -n -e "${GREEN}请输入选项编号（0-3）：${NC}"
 }
 
+# 修复校验函数：确保所有规则都替换成功
 function verify_hex_modification() {
     local source_file="$1"
     local target_file="$2"
-    local old_hex_list="$3"  # 用空格分隔的旧十六进制列表
-    local new_hex_list="$4"  # 用空格分隔的新十六进制列表
+    local old_hex_list=($3)  # 转为数组
+    local new_hex_list=($4)  # 转为数组
 
-    # 一次性读取文件内容，避免重复打开
     local source_hex=$(xxd -p "$source_file" | tr 'a-f' 'A-F')
     local target_hex=$(xxd -p "$target_file" | tr 'a-f' 'A-F')
 
-    # 校验所有规则是否替换成功
-    local old_hex_arr=($old_hex_list)
-    local new_hex_arr=($new_hex_list)
-    for ((i=0; i<${#old_hex_arr[@]}; i++)); do
-        local old_hex=${old_hex_arr[$i]}
-        local new_hex=${new_hex_arr[$i]}
-        # 原文件有旧值，且目标文件无旧值、有新值 → 校验通过
-        if [[ "$source_hex" == *"$old_hex"* ]] && [[ "$target_hex" != *"$old_hex"* ]] && [[ "$target_hex" == *"$new_hex"* ]]; then
-            return 0
-        fi
-    done
-    # 原文件无任何匹配规则 → 也视为通过
-    for old_hex in ${old_hex_arr[@]}; do
+    # 逐个校验所有规则
+    for ((i=0; i<${#old_hex_list[@]}; i++)); do
+        local old_hex=${old_hex_list[$i]}
+        local new_hex=${new_hex_list[$i]}
+        
+        # 如果源文件有旧值，但目标文件没替换掉，校验失败
         if [[ "$source_hex" == *"$old_hex"* ]]; then
-            return 1  # 有未替换的规则
+            if [[ "$target_hex" == *"$old_hex"* ]] || [[ "$target_hex" != *"$new_hex"* ]]; then
+                echo -e "  ${RED}校验失败：规则 $old_hex → $new_hex 未生效${NC}"
+                return 1
+            fi
         fi
     done
-    return 0
+    return 0  # 所有规则都通过
 }
 
 function hex_batch_modify_uexp() {
@@ -74,21 +71,18 @@ function hex_batch_modify_uexp() {
     HEX_RULES_FILE="$WORK_DIR/16进制替换规则.txt"
     OUTPUT_DIR="$WORK_DIR/修改后文件"
     
-    # 自动创建目录（一次性创建，避免重复判断）
     mkdir -p "$TMP_DIR" "$WORK_DIR" "$OUTPUT_DIR" || {
         echo -e "${RED}错误：无法创建目录，请检查权限${NC}"
         read -p "按回车键继续..."
         return
     }
 
-    # 检查xxd工具（提前检查，避免后续重复判断）
     if ! command -v xxd &> /dev/null; then
         echo -e "${RED}错误：未找到xxd工具，请执行 pkg install xxd${NC}"
         read -p "按回车键继续..."
         return
     fi
 
-    # 生成规则文件（若不存在）
     if [ ! -f "$HEX_RULES_FILE" ]; then
         echo -e "${YELLOW}生成规则文件模板：$HEX_RULES_FILE${NC}"
         cat > "$HEX_RULES_FILE" << EOF
@@ -100,10 +94,10 @@ EOF
         return
     fi
 
-    # 加载替换规则（一次性解析，生成替换列表）
+    # 加载替换规则：用数组存储
     echo -e "${GREEN}加载替换规则...${NC}"
-    local OLD_HEX_LIST=""  # 用空格分隔所有旧十六进制
-    local NEW_HEX_LIST=""  # 用空格分隔所有新十六进制
+    local OLD_HEX_ARR=()  # 数组存储旧十六进制
+    local NEW_HEX_ARR=()  # 数组存储新十六进制
     local RULES_VALID=1
 
     while IFS= read -r line; do
@@ -134,18 +128,18 @@ EOF
             echo -e "${RED}无效规则：长度不匹配${NC}"
             RULES_VALID=0
         else
-            OLD_HEX_LIST+=" $ORIGINAL_HEX"  # 累加旧值列表
-            NEW_HEX_LIST+=" $REPLACEMENT_HEX"  # 累加新值列表
+            OLD_HEX_ARR+=("$ORIGINAL_HEX")  # 加入数组
+            NEW_HEX_ARR+=("$REPLACEMENT_HEX")  # 加入数组
         fi
     done < "$HEX_RULES_FILE"
 
-    if [ $RULES_VALID -eq 0 ] || [ -z "$OLD_HEX_LIST" ]; then
+    if [ $RULES_VALID -eq 0 ] || [ ${#OLD_HEX_ARR[@]} -eq 0 ]; then
         echo -e "${RED}规则无效，请修正${NC}"
         read -p "按回车键继续..."
         return
     fi
 
-    # 扫描目标文件（一次性获取所有文件）
+    # 扫描文件
     echo -e "\n${GREEN}扫描文件...${NC}"
     local FILE_LIST=$(find "$WORK_DIR" -maxdepth 1 -type f ! -name "$(basename "$HEX_RULES_FILE")" -name "*.${TARGET_EXT}" 2>/dev/null)
     if [ -z "$FILE_LIST" ]; then
@@ -173,7 +167,7 @@ EOF
         return
     fi
 
-    # 批量修改（核心提速部分）
+    # 批量修改（核心修复：循环数组中的所有规则）
     echo -e "\n${GREEN}开始修改...${NC}"
     local SUCCESS_COUNT=0
     local VERIFY_FAIL_COUNT=0
@@ -185,12 +179,13 @@ EOF
 
         echo -e "\n处理：${YELLOW}$filename${NC}"
 
-        # 一次性读取文件并转换为十六进制（避免重复调用xxd）
+        # 转换文件为十六进制
         local file_hex=$(xxd -p "$file" | tr 'a-f' 'A-F')
+        echo -n "$file_hex" > "$tmp_hex"
 
-        # 检查是否需要修改（用grep一次性匹配所有旧值）
+        # 检查是否需要修改
         local need_modify=0
-        for old_hex in $OLD_HEX_LIST; do
+        for old_hex in "${OLD_HEX_ARR[@]}"; do
             if [[ "$file_hex" == *"$old_hex"* ]]; then
                 need_modify=1
                 break
@@ -203,11 +198,10 @@ EOF
             continue
         fi
 
-        # 写入临时文件并批量替换（合并所有替换操作）
-        echo -n "$file_hex" > "$tmp_hex"  # 直接写入变量内容，避免再次调用xxd
-        for ((i=0; i<${#OLD_HEX_LIST[@]}; i++)); do
-            local old_hex=$(echo $OLD_HEX_LIST | cut -d' ' -f$((i+1)))
-            local new_hex=$(echo $NEW_HEX_LIST | cut -d' ' -f$((i+1)))
+        # 循环替换所有规则
+        for ((i=0; i<${#OLD_HEX_ARR[@]}; i++)); do
+            local old_hex="${OLD_HEX_ARR[$i]}"
+            local new_hex="${NEW_HEX_ARR[$i]}"
             sed -i "s/$old_hex/$new_hex/g" "$tmp_hex"
         done
 
@@ -218,8 +212,8 @@ EOF
             continue
         fi
 
-        # 校验修改结果（一次性校验所有规则）
-        if verify_hex_modification "$file" "$output_file" "$OLD_HEX_LIST" "$NEW_HEX_LIST"; then
+        # 校验所有规则
+        if verify_hex_modification "$file" "$output_file" "${OLD_HEX_ARR[*]}" "${NEW_HEX_ARR[*]}"; then
             echo -e "  ${GREEN}修改成功${NC}"
             SUCCESS_COUNT=$((SUCCESS_COUNT + 1))
         else
@@ -228,7 +222,7 @@ EOF
             VERIFY_FAIL_COUNT=$((VERIFY_FAIL_COUNT + 1))
         fi
 
-        rm -f "$tmp_hex"  # 清理临时文件
+        rm -f "$tmp_hex"
     done
 
     # 输出结果
@@ -241,17 +235,18 @@ EOF
     read -p "按回车键继续..."
 }
 
+# 主循环
 while true; do
     show_menu
     read choice
     case $choice in
         1) hex_batch_modify_uexp ;;
         2)
-        # 删除目录及其所有内容（强制删除，无需确认）
-rm -rf "/storage/emulated/0/虚无梅花工具"
-rm -rf "$HOME/xuwumeihua"
-echo 再见👋🏻👋🏻
-        ;;
+            rm -rf "/storage/emulated/0/虚无梅花工具"
+            rm -rf "$HOME/xuwumeihua"
+            echo "再见👋🏻👋🏻"
+            exit 0
+            ;;
         3) echo -e "${YELLOW}功能暂未实现${NC}"; read -p "" ;;
         0) echo -e "${RED}退出${NC}"; exit 0 ;;
         *) echo -e "${RED}无效选项${NC}"; read -p "" ;;
