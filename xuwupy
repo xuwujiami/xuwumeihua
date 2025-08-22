@@ -1,0 +1,192 @@
+#!/usr/bin/env python3
+import os
+import sys
+import shutil
+import binascii
+
+# 颜色常量（终端显示用）
+RED = '\033[0;31m'
+GREEN = '\033[0;32m'
+YELLOW = '\033[0;33m'
+BLUE = '\033[0;34m'
+NC = '\033[0m'  # 恢复默认颜色
+
+TARGET_EXT = "uexp"
+LITTLE_ENDIAN = True  # 小端模式
+TMP_DIR = "/storage/emulated/0/虚无梅花工具/临时"
+WORK_DIR = "/storage/emulated/0/虚无梅花工具"
+HEX_RULES_FILE = os.path.join(WORK_DIR, "16进制替换规则.txt")
+OUTPUT_DIR = os.path.join(WORK_DIR, "修改后文件")
+
+def int_to_hex_le(integer):
+    """整数转十六进制（带小端处理）"""
+    hex_str = f"{integer:08X}"
+    if LITTLE_ENDIAN:
+        hex_str = ''.join(reversed([hex_str[i:i+2] for i in range(0, 8, 2)]))
+    return hex_str
+
+def verify_hex_modification(source_file, target_file, old_hex_list, new_hex_list):
+    """校验替换是否成功"""
+    with open(source_file, 'rb') as f:
+        source_hex = binascii.hexlify(f.read()).decode().upper()
+    with open(target_file, 'rb') as f:
+        target_hex = binascii.hexlify(f.read()).decode().upper()
+    
+    for old_hex, new_hex in zip(old_hex_list, new_hex_list):
+        if old_hex in source_hex:
+            if old_hex in target_hex or new_hex not in target_hex:
+                print(f"  {RED}校验失败：规则 {old_hex} → {new_hex} 未生效{NC}")
+                return False
+    return True
+
+def main():
+    """直接执行批量修改功能（无菜单）"""
+    print(f"{BLUE}===================================================={NC}")
+    print(f"{BLUE}||     16进制批量修改uexp      ||{NC}")
+    print(f"{BLUE}===================================================={NC}")
+    
+    # 创建目录
+    for dir_path in [TMP_DIR, WORK_DIR, OUTPUT_DIR]:
+        os.makedirs(dir_path, exist_ok=True)
+    
+    # 检查规则文件
+    if not os.path.exists(HEX_RULES_FILE):
+        print(f"{YELLOW}生成规则文件模板：{HEX_RULES_FILE}{NC}")
+        with open(HEX_RULES_FILE, 'w') as f:
+            f.write("# 格式：每行一个替换规则，左侧原始整数，右侧替换整数\n")
+            f.write("# 示例：423100 123456\n")
+        print(f"{RED}请填写规则后重新运行{NC}")
+        input("按回车键退出...")
+        return
+    
+    # 加载替换规则
+    print(f"{GREEN}加载替换规则...{NC}")
+    old_hex_list = []
+    new_hex_list = []
+    rules_valid = True
+    
+    with open(HEX_RULES_FILE, 'r') as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith('#'):
+                continue
+            parts = line.split()
+            if len(parts) != 2:
+                print(f"{RED}无效规则：缺少整数 - {line}{NC}")
+                rules_valid = False
+                continue
+            orig_int_str, repl_int_str = parts
+            if not orig_int_str.isdigit() or not repl_int_str.isdigit():
+                print(f"{RED}无效规则：非整数 - {line}{NC}")
+                rules_valid = False
+                continue
+            orig_int = int(orig_int_str)
+            repl_int = int(repl_int_str)
+            
+            # 转换为十六进制
+            orig_hex = int_to_hex_le(orig_int)
+            repl_hex = int_to_hex_le(repl_int)
+            print(f"  {orig_int} → {repl_int}（{orig_hex} → {repl_hex}）")
+            
+            # 校验十六进制合法性
+            if len(orig_hex) % 2 != 0 or len(repl_hex) % 2 != 0:
+                print(f"{RED}无效规则：十六进制长度为奇数{NC}")
+                rules_valid = False
+            elif len(orig_hex) != len(repl_hex):
+                print(f"{RED}无效规则：长度不匹配{NC}")
+                rules_valid = False
+            else:
+                old_hex_list.append(orig_hex)
+                new_hex_list.append(repl_hex)
+    
+    if not rules_valid or not old_hex_list:
+        print(f"{RED}规则无效，请修正{NC}")
+        input("按回车键退出...")
+        return
+    
+    # 扫描uexp文件
+    print(f"\n{GREEN}扫描文件...{NC}")
+    file_list = []
+    for filename in os.listdir(WORK_DIR):
+        if filename.endswith(f".{TARGET_EXT}") and filename != os.path.basename(HEX_RULES_FILE):
+            file_list.append(os.path.join(WORK_DIR, filename))
+    
+    if not file_list:
+        print(f"{YELLOW}未找到.uexp文件，请放入{WORK_DIR}{NC}")
+        input("按回车键退出...")
+        return
+    
+    # 显示待处理文件
+    print(f"\n{BLUE}待处理文件：{NC}")
+    print(f"{BLUE}--------------------------------------------------------{NC}")
+    for file in file_list:
+        print(f"- {os.path.basename(file)}")
+    total_files = len(file_list)
+    print(f"{BLUE}--------------------------------------------------------{NC}")
+    print(f"共 {GREEN}{total_files}{NC} 个文件，输出到：{GREEN}{OUTPUT_DIR}{NC}")
+    
+    confirm = input("确认修改？(y/n) ").strip().lower()
+    if confirm != 'y':
+        print(f"{YELLOW}已取消{NC}")
+        input("按回车键退出...")
+        return
+    
+    # 批量修改（核心：纯内存处理）
+    print(f"\n{GREEN}开始修改...{NC}")
+    success_count = 0
+    verify_fail_count = 0
+    
+    for file in file_list:
+        filename = os.path.basename(file)
+        output_file = os.path.join(OUTPUT_DIR, filename)
+        print(f"\n处理：{YELLOW}{filename}{NC}")
+        
+        # 读取文件为十六进制字符串
+        with open(file, 'rb') as f:
+            file_data = f.read()
+        file_hex = binascii.hexlify(file_data).decode().upper()
+        
+        # 检查是否需要修改
+        need_modify = any(old_hex in file_hex for old_hex in old_hex_list)
+        if not need_modify:
+            print(f"  {YELLOW}无匹配规则，直接复制{NC}")
+            shutil.copy2(file, output_file)
+            success_count += 1
+            continue
+        
+        # 批量替换
+        modified_hex = file_hex
+        for old_hex, new_hex in zip(old_hex_list, new_hex_list):
+            modified_hex = modified_hex.replace(old_hex, new_hex)
+        
+        # 转换回二进制并写入文件
+        try:
+            modified_data = binascii.unhexlify(modified_hex)
+            with open(output_file, 'wb') as f:
+                f.write(modified_data)
+        except Exception as e:
+            print(f"  {RED}写入失败：{str(e)}{NC}")
+            if os.path.exists(output_file):
+                os.remove(output_file)
+            continue
+        
+        # 校验替换结果
+        if verify_hex_modification(file, output_file, old_hex_list, new_hex_list):
+            print(f"  {GREEN}修改成功{NC}")
+            success_count += 1
+        else:
+            print(f"  {RED}校验失败{NC}")
+            os.remove(output_file)
+            verify_fail_count += 1
+    
+    # 输出结果统计
+    print(f"\n{BLUE}===== 完成 ====={NC}")
+    print(f"总文件：{GREEN}{total_files}{NC}")
+    print(f"成功：{GREEN}{success_count}{NC}")
+    print(f"校验失败：{RED}{verify_fail_count}{NC}")
+    print(f"读写失败：{RED}{total_files - success_count - verify_fail_count}{NC}")
+    print(f"输出目录：{GREEN}{OUTPUT_DIR}{NC}")
+    input("按回车键退出...")
+
+if __name__ == "__main__":
+    main()
